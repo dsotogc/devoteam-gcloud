@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 MAX_CHARS = 1400
 MAX_PRECIOS = 4
-MODELO_POR_DEFECTO = "gemini-3.5-flash-lite"
+MODELOS_POR_DEFECTO = ("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash-lite")
 
 RESPUESTA_SOLO_TIENDA = (
     "Solo puedo ayudarte con información sobre los productos del catálogo de Hogar Kit "
@@ -69,6 +69,7 @@ _REGEX_PRECIO = re.compile(r"\d{1,4}(?:[.,]\d{1,3})*(?:[.,]\d{2})?\s*(?:€|euro
 
 _GEMINI_CLIENT = None
 _GEMINI_INIT_ATTEMPTED = False
+_MODELO_OK = None
 
 
 def _normalizar(texto: str) -> str:
@@ -145,7 +146,10 @@ def _base_conocimiento() -> dict:
         + "\"\n"
         "4. Responde siempre en español, de forma natural, clara y breve (idealmente 1 a 4 frases, SIEMPRE menos de 1.200 caracteres).\n"
         "5. NUNCA incluyas más de 4 precios en tu respuesta. Si encajan más de 4 productos, menciona solo los 3 o 4 más relevantes e indica que hay más opciones en el catálogo.\n"
-        "6. Todos los precios del catálogo ya incluyen IVA (21 %) y están en euros (€). Si piden un total o saber si aplica envío/montaje gratis, calcula con exactitud según las condiciones.\n\n"
+        "6. Todos los precios del catálogo ya incluyen IVA (21 %) y están en euros (€). Si piden un total o saber si aplica envío/montaje gratis, calcula con exactitud según las condiciones.\n"
+        "7. Si lo que preguntan no existe (producto, color, material, medida, número de plazas, método de pago, destino de envío, servicio, descuento, financiación, tienda física...), EMPIEZA la respuesta con \"No\" y dilo claramente; después, si ayuda, ofrece la alternativa real más parecida con su nombre exacto y precio.\n"
+        "8. Cuando hables de un producto, usa su nombre exacto del catálogo y su precio exacto. Cuando respondas una condición de venta, da las cifras exactas (euros, días, años).\n"
+        "9. Un producto cumple lo pedido solo si coinciden TODOS los atributos pedidos (categoría, color, material, plazas, ancho). No sustituyas un atributo por otro.\n\n"
         "=== CONDICIONES DE VENTA ===\n"
         + condiciones
         + f"\n\n=== CATÁLOGO ACTUAL ({len(productos)} productos, precios con IVA incluido) ===\n"
@@ -186,7 +190,7 @@ def _obtener_cliente_gemini():
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     use_vertex = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes")
     project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west1")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
 
     if not api_key and not use_vertex and not project:
         log.info("Sin credenciales de Gemini/Vertex configuradas; usando motor local determinista.")
@@ -196,7 +200,7 @@ def _obtener_cliente_gemini():
         from google import genai
         from google.genai import types
 
-        timeout_ms = int(os.environ.get("GEMINI_TIMEOUT_MS", "15000"))
+        timeout_ms = int(os.environ.get("GEMINI_TIMEOUT_MS", "9000"))
         http_opts = types.HttpOptions(timeout=timeout_ms)
         if api_key:
             _GEMINI_CLIENT = genai.Client(api_key=api_key, http_options=http_opts)
@@ -221,27 +225,34 @@ def _consultar_gemini(pregunta: str) -> str | None:
     from google.genai import types
 
     kb = _base_conocimiento()
+    global _MODELO_OK
     modelo_cfg = os.environ.get("GEMINI_MODEL", "").strip()
-    modelos = [m for m in (modelo_cfg, MODELO_POR_DEFECTO, "gemini-3.8-flash") if m]
-    # Eliminar duplicados preservando orden
-    modelos = list(dict.fromkeys(modelos))
+    if _MODELO_OK:
+        modelos = [_MODELO_OK]
+    else:
+        modelos = list(dict.fromkeys(m for m in (modelo_cfg, *MODELOS_POR_DEFECTO) if m))
 
     contenido = f"<pregunta_cliente>\n{pregunta.strip()}\n</pregunta_cliente>"
     config = types.GenerateContentConfig(
         system_instruction=kb["system_instruction"],
         temperature=0.1,
-        max_output_tokens=350,
+        max_output_tokens=400,
     )
 
     for modelo in modelos:
         try:
+            cfg = config
+            if modelo.startswith("gemini-2.5"):
+                # Sin "pensar": respuestas en ~1 s
+                cfg = config.model_copy(update={"thinking_config": types.ThinkingConfig(thinking_budget=0)})
             resp = cliente.models.generate_content(
                 model=modelo,
                 contents=contenido,
-                config=config,
+                config=cfg,
             )
             texto = (getattr(resp, "text", None) or "").strip()
             if texto:
+                _MODELO_OK = modelo
                 return texto
         except Exception as exc:
             log.warning("Error llamando a Gemini (%s): %s", modelo, exc)
@@ -258,6 +269,22 @@ def _fallback_local(pregunta: str) -> str:
     kb = _base_conocimiento()
     productos = kb["productos"]
     norm = _normalizar(pregunta)
+
+    # 0) Cosas que NO existen en las condiciones: decir "No" claramente
+    m = re.search(r"\b(paypal|efectivo|contra ?reembolso|cripto\w*|bitcoin|apple ?pay|google ?pay|cheque|klarna|aplazame|amazon ?pay)\b", norm)
+    if m:
+        return f"No, no aceptamos {m.group(1)}. Solo aceptamos tarjeta, Bizum y transferencia bancaria, sin financiación ni pago a plazos."
+    m = re.search(r"\b(portugal|francia|andorra|italia|alemania|europa|extranjero|internacional\w*|fuera de espana|reino unido|mexico|gibraltar)\b", norm)
+    if m:
+        return "No, solo enviamos a la península (3 a 5 días laborables) y a Baleares (7 a 10 días laborables). No enviamos fuera de España ni a Canarias, Ceuta o Melilla."
+    if re.search(r"\b(urgente|express|exprés|24 ?h|24 horas|mismo dia|en el dia|manana mismo)\b", norm):
+        return "No, no ofrecemos envío urgente. Entregamos en 3 a 5 días laborables en la península y en 7 a 10 días laborables en Baleares."
+    if re.search(r"\b(cupon|codigo (de )?descuento|descuento|rebaja|oferta|promocion)\b", norm):
+        return "No, no tenemos códigos de descuento ni promociones. Lo que sí ofrecemos: envío gratis desde 500 € y montaje gratis desde 1.500 €."
+    if re.search(r"\b(tienda fisica|recogida en tienda|recoger en tienda|showroom|exposicion)\b", norm):
+        return "No, somos una tienda online y no tenemos tienda física ni recogida en tienda. Enviamos a la península y a Baleares."
+    if "garantia" in norm and re.search(r"\b(ampliad\w*|extendid\w*|\d+ anos)\b", norm) and not re.search(r"\b(3|10|tres|diez) anos\b", norm):
+        return "No, la garantía es de 3 años en todos los muebles y de 10 años en los colchones; no ofrecemos garantías ampliadas."
 
     # 1) Condiciones de venta
     if any(k in norm for k in ("canarias", "ceuta", "melilla")):
@@ -286,8 +313,20 @@ def _fallback_local(pregunta: str) -> str:
         "algun", "alguno", "alguna", "algunos", "algunas", "necesito", "quisiera", "ver",
         "color", "colores", "material", "materiales", "medida", "medidas", "ancho", "cm",
         "plaza", "plazas", "disponible", "disponibles", "venta", "vender", "comprar",
-        "tipo", "tipos", "modelo", "modelos", "este", "esta", "estos", "estas", "otro", "otra",
+        "tipo", "tipos", "modelo", "modelos", "euro", "euros", "eur", "presupuesto", "este", "esta", "estos", "estas", "otro", "otra",
     }
+    # Restricción de precio: "menos de 150 euros", "hasta 300 €", "más de 1000 euros"
+    filtro_precio = None
+    mp = re.search(
+        r"\b(menos de|por debajo de|maximo|max|hasta|inferior a|mas de|por encima de|superior a|minimo)\s*(\d[\d.]*)\s*(euros?|eur|€)?",
+        norm,
+    )
+    if mp:
+        limite = float(mp.group(2).replace(".", ""))
+        menor = mp.group(1) in ("menos de", "por debajo de", "maximo", "max", "hasta", "inferior a")
+        filtro_precio = (lambda pr: pr <= limite) if menor else (lambda pr: pr >= limite)
+        norm = (norm[: mp.start()] + " " + norm[mp.end():]).strip()
+
     tokens = [
         t for t in re.findall(r"[a-z0-9]+", norm)
         if (len(t) >= 3 or t.isdigit()) and t not in stopwords
@@ -307,6 +346,8 @@ def _fallback_local(pregunta: str) -> str:
 
     coincidencias = []
     for p in productos:
+        if filtro_precio and not filtro_precio(float(p.get("precio", 0))):
+            continue
         campos = _normalizar(
             f"{p.get('nombre', '')} {p.get('categoria', '')} {p.get('color', '')} "
             f"{p.get('material', '')} {p.get('ancho_cm', '')} {p.get('plazas', '')}"

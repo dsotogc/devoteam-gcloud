@@ -163,7 +163,13 @@ def _insertar_bigquery(tabla: str, fila: dict) -> None:
 
 
 def guardar_en_bigquery(pedido: dict, sesion: str = "") -> None:
-    """En segundo plano: nunca retrasa ni rompe la compra."""
+    """Se espera como máximo 3 s: Cloud Run congela la CPU tras responder, así que no puede quedar
+    en segundo plano. Si BigQuery tarda o falla, la compra sigue (el buzón ya tiene el pedido)."""
     tabla = os.environ.get("BQ_TABLA", "").strip()
-    if tabla:
-        _bq_pool.submit(_insertar_bigquery, tabla, _fila_bigquery(pedido, sesion))
+    if not tabla:
+        return
+    futuro = _bq_pool.submit(_insertar_bigquery, tabla, _fila_bigquery(pedido, sesion))
+    try:
+        futuro.result(timeout=3)
+    except Exception:
+        log.warning("BigQuery no respondió a tiempo para el pedido %s", pedido["order_id"])

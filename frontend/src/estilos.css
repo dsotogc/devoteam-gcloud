@@ -216,3 +216,24 @@ a { color: #2f5d50; }
   cursor: pointer;
 }
 .chip.activo { background: #2f5d50; color: #fff; }
+
+.panel-recomendaciones {
+  background: #fffaf0;
+  border: 2px solid #d9a441;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.panel-recomendaciones h3 { margin: 0 0 8px; }
+.lista-complementos { list-style: none; padding: 0; margin: 12px 0 0; }
+.lista-complementos li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #eadfc8;
+}
+.lista-complementos li span { flex: 1 1 220px; min-width: 0; }
+.lista-complementos .boton-anadir { width: auto; margin-top: 0; }

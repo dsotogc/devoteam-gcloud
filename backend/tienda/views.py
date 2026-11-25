@@ -70,6 +70,7 @@ def asistente(request):
 
     pregunta = cuerpo.get("pregunta", "")
     respuesta = responder_pregunta(pregunta if isinstance(pregunta, str) else "")
+    log.warning("ASISTENTE pregunta=%r respuesta=%r", str(pregunta)[:300], respuesta[:300])
     resp = JsonResponse({"respuesta": respuesta}, status=200, json_dumps_params={"ensure_ascii": False})
     resp["Cache-Control"] = "no-store"
     return resp

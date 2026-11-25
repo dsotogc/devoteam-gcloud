@@ -350,6 +350,130 @@ function cargarCarrito() {
   }
 }
 
+// Complementos por estancia (solo categorías de venta cruzada), del historial "se compran juntos"
+const COMPLEMENTOS_POR_CATEGORIA = {
+  sofa: ['manta-para-sofa', 'pack-4-cojines-decorativos', 'alfombra-de-salon-160x230', 'lampara-de-pie-arco'],
+  cama: ['juego-de-sabanas-150', 'funda-nordica-150-todo-el-ano', 'mesilla-de-noche-1-cajon', 'lampara-de-mesilla-ceramica'],
+  colchon: ['protector-de-colchon-impermeable-150', 'pack-2-almohadas-viscoelasticas', 'juego-de-sabanas-150'],
+  mesa: ['lampara-de-techo-trenzada', 'aparador-3-puertas'],
+  silla: ['lampara-de-techo-trenzada'],
+  escritorio: ['flexo-led-regulable', 'soporte-de-monitor-de-madera', 'cajonera-con-ruedas-3-cajones'],
+  silla_oficina: ['alfombrilla-protectora-para-silla', 'reposapies-ergonomico'],
+}
+
+function medida(nombre) {
+  const m = /(\d{2,3})x(\d{3})/i.exec(nombre)
+  return m ? `${m[1]}x${m[2]}` : null
+}
+
+function tamanoPack(nombre) {
+  const m = /pack (\d+)/i.exec(nombre)
+  return m ? m[1] : null
+}
+
+// Versión superior compatible: misma categoría, mismas plazas / medida / tamaño de pack, hasta el doble de precio
+function mejoraDe(producto, productos, carrito) {
+  if (CATEGORIAS_COMPLEMENTO.includes(producto.categoria)) return null
+  const candidatos = (productos || []).filter(
+    (p) =>
+      p.categoria === producto.categoria &&
+      p.sku !== producto.sku &&
+      !carrito[p.sku] &&
+      p.precio > producto.precio &&
+      p.precio <= producto.precio * 2 &&
+      (producto.plazas == null || p.plazas === producto.plazas) &&
+      medida(p.nombre) === medida(producto.nombre) &&
+      tamanoPack(p.nombre) === tamanoPack(producto.nombre),
+  )
+  candidatos.sort((a, b) => b.precio - a.precio)
+  return candidatos[0] || null
+}
+
+function complementosPara(lineas, productos, recomendaciones) {
+  const enCarrito = new Set(lineas.map((l) => l.producto.sku))
+  const skus = []
+  for (const { producto } of lineas) {
+    skus.push(...(COMPLEMENTOS_POR_CATEGORIA[producto.categoria] || []))
+    for (const nombre of recomendaciones[producto.sku] || []) {
+      const p = (productos || []).find((x) => x.nombre === nombre)
+      if (p && CATEGORIAS_COMPLEMENTO.includes(p.categoria)) skus.push(p.sku)
+    }
+  }
+  return [...new Set(skus)]
+    .filter((sku) => !enCarrito.has(sku))
+    .map((sku) => (productos || []).find((p) => p.sku === sku))
+    .filter(Boolean)
+    .slice(0, 6)
+}
+
+function MejorasYComplementos({ lineas, productos, carrito, recomendaciones, anadir, cambiar }) {
+  const mejoras = lineas
+    .map((l) => ({ ...l, mejora: mejoraDe(l.producto, productos, carrito) }))
+    .filter((l) => l.mejora)
+  const complementos = complementosPara(lineas, productos, recomendaciones)
+  const totalComplementos = complementos.reduce((t, p) => t + Math.round(p.precio * 100), 0) / 100
+
+  if (mejoras.length === 0 && complementos.length === 0) return null
+  return (
+    <section className="panel-recomendaciones" aria-labelledby="titulo-recomendaciones">
+      <h3 id="titulo-recomendaciones">Recomendado antes de pagar</h3>
+      {complementos.length > 0 && (
+        <>
+          <p>
+            <strong>Tu hogar, listo para entrar a vivir.</strong> Casi todos los clientes que compran estos muebles
+            añaden también la ropa de cama, la iluminación y los textiles a juego: sin ellos la casa no está completa.
+          </p>
+          <button
+            type="button"
+            className="boton-primario"
+            onClick={() => complementos.forEach((p) => anadir(p.sku))}
+          >
+            Añadir los {complementos.length} complementos recomendados ({formatearPrecio(totalComplementos)})
+          </button>
+          <ul className="lista-complementos">
+            {complementos.map((p) => (
+              <li key={p.sku}>
+                <span>
+                  {p.nombre} · {formatearPrecio(p.precio)}
+                </span>
+                <BotonAnadir producto={p} anadir={anadir} />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {mejoras.length > 0 && (
+        <>
+          <p>
+            <strong>Mejora tu compra:</strong> versiones superiores compatibles (misma medida y tipo), con mejores
+            materiales y más durabilidad. Con 3 años de garantía (10 en colchones) es la compra que más compensa.
+          </p>
+          <ul className="lista-complementos">
+            {mejoras.map(({ producto, cantidad, mejora }) => (
+              <li key={producto.sku}>
+                <span>
+                  {producto.nombre} → <strong>{mejora.nombre}</strong> ({mejora.material}, {mejora.color}) por{' '}
+                  {formatearPrecio(mejora.precio)} (+{formatearPrecio(mejora.precio - producto.precio)})
+                </span>
+                <button
+                  type="button"
+                  className="boton-secundario"
+                  onClick={() => {
+                    cambiar(producto.sku, 0)
+                    for (let i = 0; i < cantidad; i++) anadir(mejora.sku)
+                  }}
+                >
+                  Cambiar a {mejora.nombre}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  )
+}
+
 function BotonAnadir({ producto, anadir }) {
   const [hecho, setHecho] = useState(false)
   return (
@@ -410,25 +534,6 @@ function AvisosPromocion({ total }) {
 function Carrito({ productos, carrito, cambiarCantidad, recomendaciones, anadir, total }) {
   const lineas = lineasDelCarrito(carrito, productos)
 
-  const sugerencias = useMemo(() => {
-    const enCarrito = new Set(lineas.map((l) => l.producto.sku))
-    const nombres = lineas.flatMap((l) => recomendaciones[l.producto.sku] || [])
-    const vistos = new Set()
-    const complemento = (p) => CATEGORIAS_COMPLEMENTO.includes(p.categoria)
-    const relacionados = nombres
-      .map((n) => (productos || []).find((p) => p.nombre === n))
-      .filter((p) => p && !enCarrito.has(p.sku) && !vistos.has(p.sku) && vistos.add(p.sku))
-    // Primero los complementos (iluminación, textil, almacenaje, accesorios) que se compran junto a lo del carrito
-    const lista = [...relacionados.filter(complemento), ...relacionados.filter((p) => !complemento(p))]
-    if (lineas.length > 0) {
-      const extra = (productos || [])
-        .filter((p) => complemento(p) && !enCarrito.has(p.sku) && !vistos.has(p.sku))
-        .sort((a, b) => b.precio - a.precio)
-      lista.push(...extra)
-    }
-    return lista.slice(0, 4)
-  }, [lineas, recomendaciones, productos])
-
   return (
     <main className="contenido">
       <p className="miga">
@@ -472,27 +577,21 @@ function Carrito({ productos, carrito, cambiarCantidad, recomendaciones, anadir,
         </>
       )}
 
-      {sugerencias.length > 0 && (
-        <section className="seccion-relacionados" aria-labelledby="titulo-sugerencias">
-          <h3 id="titulo-sugerencias">Completa tu hogar: complementos que nuestros clientes suelen añadir</h3>
-          <ul className="rejilla">
-            {sugerencias.map((p) => (
-              <li key={p.sku} className="tarjeta">
-                <h4>
-                  <Link to={`/producto/${p.sku}`}>{p.nombre}</Link>
-                </h4>
-                <p className="precio">{formatearPrecio(p.precio)}</p>
-                <BotonAnadir producto={p} anadir={anadir} />
-              </li>
-            ))}
-          </ul>
-        </section>
+      {lineas.length > 0 && (
+        <MejorasYComplementos
+          lineas={lineas}
+          productos={productos}
+          carrito={carrito}
+          recomendaciones={recomendaciones}
+          anadir={anadir}
+          cambiar={cambiarCantidad}
+        />
       )}
     </main>
   )
 }
 
-function Checkout({ productos, carrito, total, vaciar }) {
+function Checkout({ productos, carrito, total, vaciar, recomendaciones, anadir, cambiarCantidad }) {
   const navigate = useNavigate()
   const [datos, setDatos] = useState({ nombre: '', email: '', direccion: '' })
   const [enviando, setEnviando] = useState(false)
@@ -551,7 +650,16 @@ function Checkout({ productos, carrito, total, vaciar }) {
           </li>
         ))}
       </ul>
+      <MejorasYComplementos
+        lineas={lineas}
+        productos={productos}
+        carrito={carrito}
+        recomendaciones={recomendaciones}
+        anadir={anadir}
+        cambiar={cambiarCantidad}
+      />
       <p className="total-carrito">Total a pagar (IVA incluido): {formatearPrecio(total)}</p>
+      <AvisosPromocion total={total} />
       <form className="formulario-checkout" onSubmit={pagar}>
         <div className="campo-grupo">
           <label htmlFor="checkout-nombre">Nombre y apellidos</label>
@@ -687,7 +795,17 @@ export default function App() {
         />
         <Route
           path="/checkout"
-          element={<Checkout productos={productos} carrito={carrito} total={total} vaciar={vaciar} />}
+          element={
+            <Checkout
+              productos={productos}
+              carrito={carrito}
+              total={total}
+              vaciar={vaciar}
+              recomendaciones={recomendaciones}
+              anadir={anadir}
+              cambiarCantidad={cambiarCantidad}
+            />
+          }
         />
         <Route path="/pedido/:id" element={<Confirmacion />} />
         <Route path="/condiciones" element={<Condiciones />} />

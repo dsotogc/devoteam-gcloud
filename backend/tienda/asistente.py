@@ -350,7 +350,59 @@ def _responder_condiciones(norm: str, productos: list[dict]) -> str | None:
     return " ".join(dict.fromkeys(partes))
 
 
+_COLORES = ("blanco", "negro", "gris", "beige", "marron", "azul", "verde", "roble", "nogal", "natural",
+            "rojo", "roja", "amarillo", "amarilla", "rosa", "naranja", "morado", "morada", "lila", "violeta",
+            "dorado", "dorada", "plateado", "plateada", "turquesa", "granate", "burdeos", "crema", "mostaza", "fucsia")
+_MATERIALES = ("tela", "lino", "piel", "cuero", "terciopelo", "madera", "metal", "melamina", "espuma", "muelles",
+               "algodon", "lana", "malla", "ceramica", "cristal", "vidrio", "marmol", "plastico", "latex", "bambu",
+               "rattan", "mimbre", "acero", "aluminio", "seda", "polipiel", "viscoelastica", "hierro")
+_ETIQUETAS = {"sofa": "sofás", "cama": "camas", "colchon": "colchones", "mesa": "mesas", "silla": "sillas",
+              "escritorio": "escritorios", "silla_oficina": "sillas de oficina", "almacenaje": "muebles de almacenaje",
+              "iluminacion": "lámparas", "textil": "textiles", "accesorio": "accesorios"}
+
+
+def _negativa(pregunta: str, norm: str, tokens: list[str], mejores: list[dict]) -> str:
+    """Negativa para algo que no existe: dice qué no hay y, si es una variante de un producto real, cómo es el real."""
+    palabras = set(re.findall(r"[a-z0-9]+", norm))
+    # ¿Pregunta por un producto concreto que sí existe pero con otro color/material/medida?
+    for p in mejores:
+        nombre_norm = _normalizar(p.get("nombre", ""))
+        claves = [w for w in re.findall(r"[a-z0-9]+", nombre_norm) if len(w) >= 3]
+        sobrantes = [t for t in tokens if t not in nombre_norm]
+        solo_atributos = all(
+            t in _COLORES or t in _MATERIALES or t.isdigit() or re.fullmatch(r"\d+x\d+", t) or t.rstrip("s") in _COLORES
+            for t in sobrantes
+        )
+        claves_texto = [w for w in claves if not re.search(r"\d", w)]
+        if claves_texto and solo_atributos and all(w in palabras for w in claves_texto):
+            color_pedido = next((c for c in _COLORES if c in palabras and c != _normalizar(p.get("color", ""))), None)
+            material_pedido = next((m for m in _MATERIALES if m in palabras and m != _normalizar(p.get("material", ""))), None)
+            if color_pedido:
+                return (f"No, el producto {p['nombre']} no está disponible en color {color_pedido}: "
+                        f"solo lo tenemos en color {p['color']}.")
+            if material_pedido:
+                return (f"No, el producto {p['nombre']} no está disponible en {material_pedido}: "
+                        f"solo lo tenemos en {p['material']}.")
+            return (f"No, no tenemos el producto {p['nombre']} con esas características. "
+                    f"Lo que vendemos es: {p['color']}, {p['material']}, {p['ancho_cm']} cm de ancho.")
+
+    # Producto o variante que no existe: repetir lo que pide, sin inventar alternativas con precio
+    m = re.search(
+        r"(?:ten[eé]is|tienen|vend[eé]is|venden|hay|existe|dispon[eé]is|ofrec[eé]is|tienes|vendes)\s+"
+        r"(?:el\s|la\s|los\s|las\s|un\s|una\s|unos\s|unas\s|alg[uú]n\s|alguna\s)?\s*(.+?)[?.!¿¡]*$",
+        pregunta.strip().lower(),
+    )
+    lo_pedido = m.group(1).strip() if m else ""
+    cats = {p.get("categoria") for p in mejores}
+    texto = f"No, no tenemos {lo_pedido} en el catálogo de Hogar Kit." if lo_pedido else "No, no tenemos ese producto en el catálogo de Hogar Kit."
+    if len(cats) == 1:
+        cat = cats.pop()
+        texto += f" Sí tenemos otros {_ETIQUETAS.get(cat, cat)}, que puedes ver en la categoría correspondiente de la tienda."
+    return texto
+
+
 def _fallback_local(pregunta: str) -> str:
+    pregunta_original = pregunta
     """Motor determinista rápido sobre condiciones y catálogo si el LLM no está disponible."""
     kb = _base_conocimiento()
     productos = kb["productos"]
@@ -443,14 +495,9 @@ def _fallback_local(pregunta: str) -> str:
     max_score = max(s for s, _ in coincidencias)
     mejores = [p for s, p in coincidencias if s == max_score]
 
-    # Si ningún producto cumple TODO lo que se pide (p. ej. "sofá rojo", "colchón de látex"), decir que no
+    # Si ningún producto cumple TODO lo que se pide: negativa limpia, concreta y SIN precios
     if max_score < len(tokens):
-        seleccion = sorted(mejores, key=lambda x: float(x["precio"]))[:3]
-        parecidos = "; ".join(f"{p['nombre']} ({_formatear_precio(float(p['precio']))})" for p in seleccion)
-        return (
-            "No, no tenemos ningún producto con esas características en el catálogo de Hogar Kit. "
-            f"Lo más parecido que sí vendemos: {parecidos} (IVA incluido)."
-        )
+        return _negativa(pregunta_original, norm, tokens, mejores)
 
     if any(k in norm for k in ("mas barato", "mas barata", "economico", "economica", "menor precio")):
         mejores.sort(key=lambda x: float(x["precio"]))

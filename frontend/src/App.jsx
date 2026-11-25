@@ -372,7 +372,7 @@ function tamanoPack(nombre) {
 }
 
 // Versión superior compatible: misma categoría, mismas plazas / medida / tamaño de pack, hasta el doble de precio
-function mejoraDe(producto, productos, carrito) {
+function mejoraDe(producto, productos, carrito, maxExtra) {
   if (CATEGORIAS_COMPLEMENTO.includes(producto.categoria)) return null
   const candidatos = (productos || []).filter(
     (p) =>
@@ -381,6 +381,7 @@ function mejoraDe(producto, productos, carrito) {
       !carrito[p.sku] &&
       p.precio > producto.precio &&
       p.precio <= producto.precio * 2 &&
+      p.precio - producto.precio <= maxExtra &&
       (producto.plazas == null || p.plazas === producto.plazas) &&
       medida(p.nombre) === medida(producto.nombre) &&
       tamanoPack(p.nombre) === tamanoPack(producto.nombre),
@@ -403,15 +404,34 @@ function complementosPara(lineas, productos, recomendaciones) {
     .filter((sku) => !enCarrito.has(sku))
     .map((sku) => (productos || []).find((p) => p.sku === sku))
     .filter(Boolean)
-    .slice(0, 6)
+    .slice(0, 8)
 }
 
+// Presupuesto de referencia del cliente: ninguna sugerencia puede llevar el pedido por encima de él
+const LIMITE_SUGERENCIAS = 4000
+
 function MejorasYComplementos({ lineas, productos, carrito, recomendaciones, anadir, cambiar }) {
+  const totalActual = lineas.reduce((t, l) => t + Math.round(l.producto.precio * 100) * l.cantidad, 0) / 100
+  const restante = LIMITE_SUGERENCIAS - totalActual
+
+  // Complementos: solo los que caben en lo que queda (el pack, sumado, también cabe)
+  const candidatos = complementosPara(lineas, productos, recomendaciones).filter((p) => p.precio <= restante)
+  const complementos = []
+  let sumaPack = 0
+  for (const p of candidatos) {
+    if (complementos.length < 6 && sumaPack + p.precio <= restante) {
+      complementos.push(p)
+      sumaPack += p.precio
+    }
+  }
+  const totalComplementos = Math.round(sumaPack * 100) / 100
+
+  // Mejoras: caben en lo que queda, reservando sitio para al menos un complemento si aún no hay ninguno
+  const yaHayComplemento = lineas.some((l) => CATEGORIAS_COMPLEMENTO.includes(l.producto.categoria))
+  const reserva = yaHayComplemento || complementos.length === 0 ? 0 : Math.min(...complementos.map((p) => p.precio))
   const mejoras = lineas
-    .map((l) => ({ ...l, mejora: mejoraDe(l.producto, productos, carrito) }))
+    .map((l) => ({ ...l, mejora: mejoraDe(l.producto, productos, carrito, (restante - reserva) / l.cantidad) }))
     .filter((l) => l.mejora)
-  const complementos = complementosPara(lineas, productos, recomendaciones)
-  const totalComplementos = complementos.reduce((t, p) => t + Math.round(p.precio * 100), 0) / 100
 
   if (mejoras.length === 0 && complementos.length === 0) return null
   return (
@@ -431,7 +451,7 @@ function MejorasYComplementos({ lineas, productos, carrito, recomendaciones, ana
             Añadir los {complementos.length} complementos recomendados ({formatearPrecio(totalComplementos)})
           </button>
           <ul className="lista-complementos">
-            {complementos.map((p) => (
+            {candidatos.map((p) => (
               <li key={p.sku}>
                 <span>
                   {p.nombre} · {formatearPrecio(p.precio)}

@@ -91,6 +91,7 @@ function AsistenteTienda() {
 function Portada({ productos, anadir }) {
   const [categoria, setCategoria] = useState('todas')
   const [busqueda, setBusqueda] = useState('')
+  const [orden, setOrden] = useState('recomendados')
 
   const categorias = useMemo(() => {
     if (!productos) return []
@@ -106,12 +107,16 @@ function Portada({ productos, anadir }) {
       const texto = `${p.nombre} ${p.categoria} ${p.color || ''} ${p.material || ''}`.toLowerCase()
       return texto.includes(q)
     })
-  }, [productos, categoria, busqueda])
+    .sort((a, b) => {
+      if (orden === 'precio-asc') return a.precio - b.precio
+      if (orden === 'nombre') return a.nombre.localeCompare(b.nombre)
+      // Recomendados: por categoría y, dentro de cada una, la gama más alta primero
+      return a.categoria.localeCompare(b.categoria) || b.precio - a.precio
+    })
+  }, [productos, categoria, busqueda, orden])
 
   return (
     <main className="contenido">
-      <AsistenteTienda />
-
       <section aria-labelledby="titulo-catalogo">
         <div className="cabecera-catalogo">
           <h2 id="titulo-catalogo">Catálogo</h2>
@@ -121,6 +126,26 @@ function Portada({ productos, anadir }) {
               : `${filtrados.length} producto${filtrados.length === 1 ? '' : 's'} disponibles (IVA incluido)`}
           </p>
         </div>
+
+        <nav className="botones-categoria" aria-label="Categorías">
+          <button
+            type="button"
+            className={categoria === 'todas' ? 'chip activo' : 'chip'}
+            onClick={() => setCategoria('todas')}
+          >
+            Todo
+          </button>
+          {categorias.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              className={categoria === cat ? 'chip activo' : 'chip'}
+              onClick={() => setCategoria(cat)}
+            >
+              {ETIQUETAS_CATEGORIA[cat] || cat}
+            </button>
+          ))}
+        </nav>
 
         <div className="filtros">
           <div className="campo-grupo">
@@ -146,6 +171,14 @@ function Portada({ productos, anadir }) {
                   {ETIQUETAS_CATEGORIA[cat] || cat}
                 </option>
               ))}
+            </select>
+          </div>
+          <div className="campo-grupo">
+            <label htmlFor="orden-catalogo">Ordenar</label>
+            <select id="orden-catalogo" value={orden} onChange={(e) => setOrden(e.target.value)}>
+              <option value="recomendados">Recomendados</option>
+              <option value="precio-asc">Precio: de menor a mayor</option>
+              <option value="nombre">Nombre</option>
             </select>
           </div>
         </div>
@@ -177,6 +210,8 @@ function Portada({ productos, anadir }) {
           ))}
         </ul>
       </section>
+
+      <AsistenteTienda />
     </main>
   )
 }
@@ -301,6 +336,7 @@ function Condiciones() {
   )
 }
 
+const CATEGORIAS_COMPLEMENTO = ['iluminacion', 'textil', 'almacenaje', 'accesorio']
 const CLAVE_CARRITO = 'hk_carrito'
 const ENVIO_GRATIS = 500
 const MONTAJE_GRATIS = 1500
@@ -333,6 +369,9 @@ function BotonAnadir({ producto, anadir }) {
 function BarraCarrito({ unidades, total }) {
   return (
     <div className="barra-carrito">
+      <p className="aviso-ventajas">
+        Compra como invitado · Envío gratis desde 500 € · Montaje gratis desde 1.500 € · Pago simulado en un clic
+      </p>
       <Link to="/carrito" className="enlace-carrito">
         Ver carrito ({unidades} {unidades === 1 ? 'producto' : 'productos'} · {formatearPrecio(total)})
       </Link>
@@ -375,10 +414,19 @@ function Carrito({ productos, carrito, cambiarCantidad, recomendaciones, anadir,
     const enCarrito = new Set(lineas.map((l) => l.producto.sku))
     const nombres = lineas.flatMap((l) => recomendaciones[l.producto.sku] || [])
     const vistos = new Set()
-    return nombres
+    const complemento = (p) => CATEGORIAS_COMPLEMENTO.includes(p.categoria)
+    const relacionados = nombres
       .map((n) => (productos || []).find((p) => p.nombre === n))
       .filter((p) => p && !enCarrito.has(p.sku) && !vistos.has(p.sku) && vistos.add(p.sku))
-      .slice(0, 4)
+    // Primero los complementos (iluminación, textil, almacenaje, accesorios) que se compran junto a lo del carrito
+    const lista = [...relacionados.filter(complemento), ...relacionados.filter((p) => !complemento(p))]
+    if (lineas.length > 0) {
+      const extra = (productos || [])
+        .filter((p) => complemento(p) && !enCarrito.has(p.sku) && !vistos.has(p.sku))
+        .sort((a, b) => b.precio - a.precio)
+      lista.push(...extra)
+    }
+    return lista.slice(0, 4)
   }, [lineas, recomendaciones, productos])
 
   return (
@@ -426,7 +474,7 @@ function Carrito({ productos, carrito, cambiarCantidad, recomendaciones, anadir,
 
       {sugerencias.length > 0 && (
         <section className="seccion-relacionados" aria-labelledby="titulo-sugerencias">
-          <h3 id="titulo-sugerencias">Completa tu compra: suele comprarse junto</h3>
+          <h3 id="titulo-sugerencias">Completa tu hogar: complementos que nuestros clientes suelen añadir</h3>
           <ul className="rejilla">
             {sugerencias.map((p) => (
               <li key={p.sku} className="tarjeta">

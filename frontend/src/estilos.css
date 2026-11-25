@@ -202,3 +202,17 @@ a { color: #2f5d50; }
 .formulario-checkout { display: flex; flex-direction: column; gap: 12px; max-width: 520px; }
 .boton-pagar { font-size: 1.1rem; padding: 14px 20px; }
 .mensaje-ok { color: #1d6b3a; font-weight: 600; font-size: 1.1rem; }
+
+.aviso-ventajas { margin: 0 auto 0 0; font-size: 0.85rem; color: #2f5d50; font-weight: 600; flex: 1 1 260px; }
+.botones-categoria { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.chip {
+  border: 1px solid #2f5d50;
+  background: #fff;
+  color: #2f5d50;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.chip.activo { background: #2f5d50; color: #fff; }

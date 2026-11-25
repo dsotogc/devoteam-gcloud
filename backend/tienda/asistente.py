@@ -264,6 +264,92 @@ def _formatear_precio(precio: float) -> str:
     return f"{precio:.2f} €".replace(".", ",")
 
 
+_CANARIAS = r"\b(canarias|tenerife|gran canaria|lanzarote|fuerteventura|la palma|la gomera|el hierro|las palmas|ceuta|melilla)\b"
+_BALEARES = r"\b(baleares|mallorca|menorca|ibiza|formentera|palma de mallorca)\b"
+
+
+def _importe_pedido(norm: str, productos: list[dict]) -> float | None:
+    """Importe del pedido: una cifra en euros de la pregunta o la suma de los productos nombrados."""
+    m = re.search(r"(\d{1,3}(?:[.\s]\d{3})+|\d+)(?:,(\d{1,2}))?\s*(?:€|\beuros?\b|\beur\b)", norm)
+    if m:
+        entero = re.sub(r"[.\s]", "", m.group(1))
+        return float(f"{entero}.{m.group(2) or 0}")
+    total = 0.0
+    for p in productos:
+        nombre = _normalizar(p.get("nombre", ""))
+        corto = " ".join(nombre.split()[:2])  # "sofa bergen", "cama luna"...
+        if nombre in norm or (len(corto) > 8 and corto in norm and len(nombre.split()) > 1):
+            total += float(p.get("precio", 0))
+    return total or None
+
+
+def _responder_condiciones(norm: str, productos: list[dict]) -> str | None:
+    temas = []
+    colchon = "colchon" in norm
+    importe = _importe_pedido(norm, productos)
+    txt_importe = f"{importe:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".") if importe else ""
+
+    if re.search(_CANARIAS, norm):
+        temas.append("No, no enviamos a Canarias, Ceuta ni Melilla. Solo entregamos en la península (3 a 5 días laborables) y en Baleares (7 a 10 días laborables).")
+    plazo = re.search(r"\b(tarda\w*|cuando llega\w*|cuantos dias|plazo\w*|dias laborables|entrega\w*|recibir\w*|llega\w*)\b", norm)
+    if re.search(_BALEARES, norm):
+        temas.append("Sí, enviamos a Baleares: la entrega tarda de 7 a 10 días laborables.")
+
+    if re.search(r"\b(envio\w*|enviar|portes|gastos de envio|transporte|enviais)\b", norm) or ("gratis" in norm and "montaje" not in norm):
+        if importe:
+            if importe >= 500:
+                temas.append("el envío es gratis (gratis desde 500 €)")
+            else:
+                temas.append("el envío cuesta 49 € (gratis desde 500 €)")
+        elif not any("Baleares" in t or "Canarias" in t for t in temas) and not (
+            plazo and not re.search(r"\b(cuesta\w*|precio|gratis|coste|cobra\w*|pagar|vale)\b", norm)
+        ):
+            temas.append("El envío es gratis en pedidos desde 500 €; en pedidos de menos de 500 € cuesta 49 €.")
+
+    if re.search(r"\b(mont(aje|ar|ais|an|amos|ado|ados|an)\w*|instala\w*|armar|ensambla\w*)\b", norm):
+        if importe:
+            if importe >= 1500:
+                temas.append("el montaje a domicilio es gratis (gratis desde 1.500 €)")
+            else:
+                temas.append("el montaje a domicilio cuesta 39 € por pedido (gratis desde 1.500 €)")
+        else:
+            temas.append("El montaje a domicilio cuesta 39 € por pedido y es gratis en pedidos desde 1.500 €.")
+
+    if re.search(r"\b(devol\w*|devuelv\w*|reembols\w*|noches|prueba|no me convence|no me gusta|desistimiento|cambiar)\b", norm):
+        if colchon:
+            temas.append("Los colchones tienen 100 noches de prueba: si no te convence, lo recogemos sin coste. Además, tienes 30 días naturales para devolver cualquier producto sin usar.")
+        else:
+            temas.append("Tienes 30 días naturales para devolver cualquier producto sin usar. Los colchones, además, tienen 100 noches de prueba con recogida sin coste.")
+
+    if "garantia" in norm:
+        if colchon:
+            temas.append("Los colchones tienen 10 años de garantía (el resto de muebles, 3 años).")
+        else:
+            temas.append("Todos los muebles tienen 3 años de garantía; los colchones, 10 años.")
+
+    if re.search(r"\b(financ\w*|plazos|cuotas|aplazad\w*|mensualidad\w*)\b", norm):
+        temas.append("No, no ofrecemos financiación ni pago a plazos. Aceptamos tarjeta, Bizum y transferencia bancaria.")
+    else:
+        metodo = re.search(r"\b(bizum|tarjeta|transferencia|visa|mastercard|credito|debito)\b", norm)
+        if metodo:
+            temas.append(f"Sí, puedes pagar con {metodo.group(1)}. Aceptamos tarjeta, Bizum y transferencia bancaria.")
+        elif not temas and re.search(r"\b(pago|pagar|metodos? de pago|formas? de pago|como pago)\b", norm):
+            temas.append("Aceptamos tarjeta, Bizum y transferencia bancaria. No ofrecemos financiación ni pago a plazos.")
+
+    if plazo and not any("días laborables" in t for t in temas) and not re.search(r"\b(devol\w*|devuelv\w*|garantia)\b", norm):
+        temas.append("Entregamos en 3 a 5 días laborables en la península y en 7 a 10 días laborables en Baleares.")
+    if not temas:
+        return None
+    # Frases de importe calculado ("el envío es gratis...") van juntas tras "Para un pedido de X €:"
+    calculadas = [t for t in temas if t[0].islower()]
+    resto = [t for t in temas if not t[0].islower()]
+    partes = []
+    if calculadas:
+        partes.append(f"Para un pedido de {txt_importe}, " + " y ".join(calculadas) + ".")
+    partes.extend(resto)
+    return " ".join(dict.fromkeys(partes))
+
+
 def _fallback_local(pregunta: str) -> str:
     """Motor determinista rápido sobre condiciones y catálogo si el LLM no está disponible."""
     kb = _base_conocimiento()
@@ -286,21 +372,10 @@ def _fallback_local(pregunta: str) -> str:
     if "garantia" in norm and re.search(r"\b(ampliad\w*|extendid\w*|\d+ anos)\b", norm) and not re.search(r"\b(3|10|tres|diez) anos\b", norm):
         return "No, la garantía es de 3 años en todos los muebles y de 10 años en los colchones; no ofrecemos garantías ampliadas."
 
-    # 1) Condiciones de venta
-    if any(k in norm for k in ("canarias", "ceuta", "melilla")):
-        return "No realizamos envíos a Canarias, Ceuta ni Melilla. Solo entregamos en la península (3 a 5 días laborables) y en Baleares (7 a 10 días laborables)."
-    if any(k in norm for k in ("financiac", "plazos", "cuotas")):
-        return "No ofrecemos financiación ni pago a plazos. Aceptamos tarjeta, Bizum y transferencia bancaria."
-    if any(k in norm for k in ("pago", "pagar", "bizum", "tarjeta", "transferencia")):
-        return "Aceptamos pago con tarjeta, Bizum y transferencia bancaria. No ofrecemos financiación ni pago a plazos."
-    if any(k in norm for k in ("montaje", "montar", "instalacion")):
-        return "El servicio de montaje a domicilio cuesta 39 € por pedido y es gratis en pedidos desde 1.500 €."
-    if any(k in norm for k in ("devoluc", "devolver", "noches", "prueba")):
-        return "Tienes 30 días naturales para devolver cualquier producto sin usar. Además, los colchones incluyen 100 noches de prueba con recogida sin coste si no te convencen."
-    if "garantia" in norm:
-        return "Todos los muebles tienen 3 años de garantía y los colchones cuentan con 10 años de garantía."
-    if any(k in norm for k in ("envio", "entrega", "tarda", "baleares", "peninsula", "portes")):
-        return "El envío es gratis en pedidos desde 500 € y cuesta 49 € en pedidos inferiores a 500 €. Entregamos en 3 a 5 días laborables en península y 7 a 10 días laborables en Baleares (no enviamos a Canarias, Ceuta ni Melilla)."
+    # 1) Condiciones de venta (combinando todos los temas de la pregunta y calculando con el importe)
+    respuesta_cond = _responder_condiciones(norm, productos)
+    if respuesta_cond:
+        return respuesta_cond
 
     # 2) Búsqueda en catálogo
     stopwords = {
